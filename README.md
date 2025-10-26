@@ -197,6 +197,17 @@ Firebase yapılandırma dosyaları:
 
 ## 📱 Ekran Görüntüleri
 
+<p align="center">
+  <img src="docs/ss1.png" width="200" alt="Ekran 1"/>
+  <img src="docs/ss2.png" width="200" alt="Ekran 2"/>
+  <img src="docs/ss3.png" width="200" alt="Ekran 3"/>
+</p>
+
+<p align="center">
+  <img src="docs/ss4.png" width="200" alt="Ekran 4"/>
+  <img src="docs/ss5.png" width="200" alt="Ekran 5"/>
+</p>
+
 ### Temel Akışlar
 1. **Kayıt Ol** → Email ve şifre ile hesap oluşturma
 2. **Giriş Yap** → Mevcut hesapla giriş
@@ -322,7 +333,7 @@ Bu özellikler için kullanılabilecek servisler:
 
 ## 👨‍💻 Geliştirici
 
-Bu proje ConnectInno case study kapsamında geliştirilmiştir.
+Bu proje Connectinno case study kapsamında geliştirilmiştir.
 
 ## 📄 Lisans
 
@@ -330,4 +341,4 @@ Bu proje case study amaçlı geliştirilmiştir.
 
 ---
 
-**Not**: Demo video ve daha detaylı dokümantasyon için `/docs` klasörüne bakınız (eklenecek).
+**Not**: Demo video ve daha detaylı resimler `/docs` klasörüne bakınız (eklenecek).
