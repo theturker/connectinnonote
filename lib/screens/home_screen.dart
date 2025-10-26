@@ -6,6 +6,7 @@ import '../models/note.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_text_styles.dart';
 import '../widgets/note_card.dart';
+import '../widgets/sync_status_indicator.dart';
 import 'add_note_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -65,6 +66,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       appBar: _buildAppBar(),
       body: Column(
         children: [
+          // Sync durumu göstergesi
+          const SyncStatusIndicator(),
           _buildSearchBar(),
           Expanded(
             child: _buildNotesList(),
@@ -86,6 +89,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ),
       ),
       actions: [
+        // Manuel sync butonu
+        Obx(() {
+          if (_noteController.isOnline && !_noteController.isLoading) {
+            return IconButton(
+              icon: const Icon(Icons.sync, color: Colors.white),
+              onPressed: () async {
+                await _noteController.manualSync();
+              },
+              tooltip: 'Manuel Senkronizasyon',
+            );
+          }
+          return const SizedBox.shrink();
+        }),
         // Favori butonu
         Obx(() => IconButton(
           icon: Icon(

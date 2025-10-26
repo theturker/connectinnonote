@@ -18,22 +18,85 @@ class AuthController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    
+    // Önce local session kontrolü yap (offline için)
+    _checkLocalSession();
+    
     // Firebase Auth durumunu dinle
     _auth.authStateChanges().listen((User? user) {
       if (user != null) {
         _isLoggedIn.value = true;
         _currentUserId.value = user.uid;
+        // Local'e kaydet
+        _saveLocalSession(user.uid, user.email ?? '');
         // NoteController'a kullanıcı ID'sini gönder
-        final noteController = Get.find<NoteController>();
-        noteController.setUserId(_currentUserId.value);
+        try {
+          final noteController = Get.find<NoteController>();
+          noteController.setUserId(_currentUserId.value);
+        } catch (e) {
+          print('NoteController henüz hazır değil: $e');
+        }
       } else {
-        _isLoggedIn.value = false;
-        _currentUserId.value = '';
+        // Offline ise local session'ı koru
+        _checkLocalSession();
       }
     });
-    
-    // App başlangıcında otomatik giriş kontrolü
-    _checkRememberedUser();
+  }
+  
+  // Local session kontrolü (offline için)
+  Future<void> _checkLocalSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUserId = prefs.getString('user_id');
+      final savedEmail = prefs.getString('user_email');
+      
+      if (savedUserId != null && savedEmail != null) {
+        print('✅ Local session bulundu: $savedEmail');
+        _isLoggedIn.value = true;
+        _currentUserId.value = savedUserId;
+        
+        // NoteController'a bildir
+        try {
+          final noteController = Get.find<NoteController>();
+          noteController.setUserId(_currentUserId.value);
+        } catch (e) {
+          print('NoteController henüz hazır değil: $e');
+        }
+        
+        // Home ekranına yönlendir
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (Get.currentRoute == '/login') {
+            Get.offAllNamed('/home');
+          }
+        });
+      }
+    } catch (e) {
+      print('Local session kontrolü hatası: $e');
+    }
+  }
+  
+  // Local session'ı kaydet
+  Future<void> _saveLocalSession(String userId, String email) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_id', userId);
+      await prefs.setString('user_email', email);
+      print('✅ Local session kaydedildi');
+    } catch (e) {
+      print('Local session kaydetme hatası: $e');
+    }
+  }
+  
+  // Local session'ı temizle
+  Future<void> _clearLocalSession() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('user_id');
+      await prefs.remove('user_email');
+      print('✅ Local session temizlendi');
+    } catch (e) {
+      print('Local session temizleme hatası: $e');
+    }
   }
 
   // Remember me kontrolü
@@ -92,6 +155,9 @@ class AuthController extends GetxController {
       print('🔥 Firebase giriş başarılı: ${userCredential.user?.uid}');
       
       if (userCredential.user != null) {
+        // Local session'ı kaydet (offline için)
+        await _saveLocalSession(userCredential.user!.uid, email);
+        
         // Remember me işaretliyse bilgileri kaydet
         if (rememberMe) {
           await _saveRememberMe(email, password);
@@ -147,6 +213,12 @@ class AuthController extends GetxController {
       if (e.toString().contains('PigeonUserDetails')) {
         print('🔥 Firebase giriş başarılı ama type cast hatası, başarılı sayılıyor');
         
+        // Local session'ı kaydet
+        final user = _auth.currentUser;
+        if (user != null) {
+          await _saveLocalSession(user.uid, email);
+        }
+        
         // Remember me işaretliyse bilgileri kaydet
         if (rememberMe) {
           await _saveRememberMe(email, password);
@@ -193,6 +265,9 @@ class AuthController extends GetxController {
       );
       
       print('🔥 Firebase kayıt başarılı: ${userCredential.user?.uid}');
+      
+      // Local session'ı kaydet (offline için)
+      await _saveLocalSession(userCredential.user!.uid, email);
       
       // Remember me işaretliyse bilgileri kaydet
       if (rememberMe) {
@@ -251,6 +326,12 @@ class AuthController extends GetxController {
       if (e.toString().contains('PigeonUserDetails')) {
         print('🔥 Firebase kayıt başarılı ama type cast hatası, başarılı sayılıyor');
         
+        // Local session'ı kaydet
+        final user = _auth.currentUser;
+        if (user != null) {
+          await _saveLocalSession(user.uid, email);
+        }
+        
         // Remember me işaretliyse bilgileri kaydet
         if (rememberMe) {
           await _saveRememberMe(email, password);
@@ -288,6 +369,12 @@ class AuthController extends GetxController {
       await _auth.signOut();
       // Remember me bilgilerini temizle
       await _clearRememberMe();
+      // Local session'ı temizle
+      await _clearLocalSession();
+      
+      // State'i temizle
+      _isLoggedIn.value = false;
+      _currentUserId.value = '';
       
       Get.snackbar(
         'Çıkış',

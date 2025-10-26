@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:convert';
 import '../models/note.dart';
 import '../constants/app_colors.dart';
+import '../services/local_database_service.dart';
+import '../services/sync_manager.dart';
+import '../services/connectivity_service.dart';
 
+/// Note Controller - Offline-First yaklaşımla not yönetimi
+/// 
+/// Bu controller tüm not işlemlerini önce local DB'de yapar,
+/// sonra arka planda Firebase'e senkronize eder.
 class NoteController extends GetxController {
+  final LocalDatabaseService _localDb = Get.find<LocalDatabaseService>();
+  final SyncManager _syncManager = Get.find<SyncManager>();
+  final ConnectivityService _connectivity = Get.find<ConnectivityService>();
+  
   final RxList<Note> _notes = <Note>[].obs;
   final RxString _searchQuery = ''.obs;
   final RxBool _isLoading = false.obs;
@@ -15,12 +22,7 @@ class NoteController extends GetxController {
   final RxBool _showFavoritesOnly = false.obs;
   
   // Silinen notlar için geri alma özelliği
-  final RxList<Note> _deletedNotes = <Note>[].obs;
   final Rx<Note?> _lastDeletedNote = Rx<Note?>(null);
-  
-  // Firestore
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
 
   // Getters
   List<Note> get notes => _notes;
@@ -29,6 +31,20 @@ class NoteController extends GetxController {
   String get currentUserId => _currentUserId.value;
   bool get showFavoritesOnly => _showFavoritesOnly.value;
   Note? get lastDeletedNote => _lastDeletedNote.value;
+  bool get isOnline => _connectivity.isOnline;
+
+  @override
+  void onInit() {
+    super.onInit();
+    
+    // Connectivity değişikliklerini dinle
+    ever(_connectivity.isOnlineRx, (isOnline) {
+      if (isOnline) {
+        print('🔄 Online - Syncing notes...');
+        _syncManager.syncAll();
+      }
+    });
+  }
 
   // Filtrelenmiş notlar (arama sonuçları)
   List<Note> get filteredNotes {
@@ -51,7 +67,7 @@ class NoteController extends GetxController {
     notes.sort((a, b) {
       if (a.isFavorite && !b.isFavorite) return -1;
       if (!a.isFavorite && b.isFavorite) return 1;
-      return b.updatedAt.compareTo(a.updatedAt); // En son güncellenen üstte
+      return b.updatedAt.compareTo(a.updatedAt);
     });
     
     return notes;
@@ -62,260 +78,233 @@ class NoteController extends GetxController {
     return _notes.where((note) => note.isFavorite).toList();
   }
 
-  // Kullanıcı ID'sini ayarla
+  /// Kullanıcı ID'sini ayarla ve notları yükle
   Future<void> setUserId(String userId) async {
     _currentUserId.value = userId;
-    await _loadNotes(); // Kullanıcı değiştiğinde notları yükle
+    await loadNotes();
   }
 
-  // Notları Firestore'dan yükle
-  Future<void> _loadNotes() async {
+  /// Notları local DB'den yükle
+  Future<void> loadNotes() async {
     try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        print('Kullanıcı giriş yapmamış');
-        _addWelcomeNote();
-        return;
+      _isLoading.value = true;
+      
+      print('📖 Loading notes from local DB...');
+      
+      // Local DB'den notları al
+      final localNotes = _localDb.getAllNotes(userId: _currentUserId.value);
+      _notes.value = localNotes;
+      
+      print('✅ Loaded ${_notes.length} notes from local DB');
+      
+      // Arka planda Firebase'den sync et
+      if (_connectivity.isOnline) {
+        _syncManager.syncFromFirebase().then((_) {
+          // Sync sonrası tekrar yükle
+          final updatedNotes = _localDb.getAllNotes(userId: _currentUserId.value);
+          _notes.value = updatedNotes;
+          print('✅ Notes refreshed from Firebase');
+        });
+      } else {
+        print('⚠️ Offline - Showing cached notes');
       }
-
-      final snapshot = await _firestore
-          .collection('users')
-          .doc(user.uid)
-          .collection('notes')
-          .orderBy('updatedAt', descending: true)
-          .get();
-
-      if (snapshot.docs.isEmpty) {
-        _addWelcomeNote();
-        return;
-      }
-
-      _notes.value = snapshot.docs.map((doc) {
-        final data = doc.data();
-        data['id'] = doc.id; // Firestore document ID'sini ekle
-        return Note.fromJson(data);
-      }).toList();
-
-      print('Firestore\'dan ${_notes.length} not yüklendi');
     } catch (e) {
-      print('Notlar yüklenirken hata: $e');
-      _addWelcomeNote();
+      print('❌ Error loading notes: $e');
+      Get.snackbar(
+        'Hata',
+        'Notlar yüklenirken hata oluştu',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+      );
+    } finally {
+      _isLoading.value = false;
     }
   }
 
-  // Notları Firestore'a kaydet (artık kullanılmıyor, her işlem ayrı ayrı Firestore'a kaydediliyor)
-  Future<void> _saveNotes() async {
-    // Bu metod artık kullanılmıyor, her CRUD işlemi ayrı ayrı Firestore'a kaydediliyor
-    print('_saveNotes çağrıldı ama artık kullanılmıyor');
-  }
-
-  // Hoş geldiniz notunu ekle
-  void _addWelcomeNote() {
-    final welcomeNote = Note(
-      id: 'welcome_device',
-      title: 'Hoş Geldiniz',
-      content: 'ConnectInNote uygulamasına hoş geldiniz! Bu uygulama ile notlarınızı kolayca yönetebilirsiniz.',
-      createdAt: DateTime.now(),
-      updatedAt: DateTime.now(),
-      isFavorite: true,
-      userId: 'device',
-    );
-    
-    _notes.add(welcomeNote);
-    _saveNotes();
-  }
-
-  // Arama sorgusunu güncelle
+  /// Arama sorgusunu güncelle
   void updateSearchQuery(String query) {
     _searchQuery.value = query;
   }
 
-  // Arama sorgusunu temizle
+  /// Arama sorgusunu temizle
   void clearSearch() {
     _searchQuery.value = '';
   }
 
-  // Favori filtresini değiştir
+  /// Favori filtresini değiştir
   void toggleFavoritesFilter() {
     _showFavoritesOnly.value = !_showFavoritesOnly.value;
   }
 
-  // Favori filtresini kapat
+  /// Favori filtresini kapat
   void clearFavoritesFilter() {
     _showFavoritesOnly.value = false;
   }
 
-  // Not ekleme
+  /// Not ekleme (Offline-First)
   Future<void> addNote(String title, String content) async {
     try {
-      _isLoading.value = true;
+      print('📝 Adding note (offline-first)...');
       
-      print('🔥 addNote başladı: $title');
+      // Benzersiz ID oluştur
+      final noteId = '${_currentUserId.value}_${DateTime.now().millisecondsSinceEpoch}';
       
-      final user = _auth.currentUser;
-      if (user == null) {
-        print('🔥 Hata: Kullanıcı giriş yapmamış');
-        throw Exception('Kullanıcı giriş yapmamış');
-      }
-
-      print('🔥 Kullanıcı ID: ${user.uid}');
-
-      final noteData = {
-        'title': title,
-        'content': content,
-        'createdAt': Timestamp.fromDate(DateTime.now()),
-        'updatedAt': Timestamp.fromDate(DateTime.now()),
-        'isFavorite': false,
-        'userId': user.uid,
-      };
-
-      print('🔥 Firestore\'a kaydediliyor...');
-
-      // Firestore'a kaydet
-      final docRef = await _firestore
-          .collection('users')
-          .doc(user.uid)
-          .collection('notes')
-          .add(noteData);
-
-      print('🔥 Firestore\'a kaydedildi. Document ID: ${docRef.id}');
-
-      // Local listeye ekle
+      // Yeni not oluştur
       final newNote = Note(
-        id: docRef.id,
+        id: noteId,
         title: title,
         content: content,
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
-        userId: user.uid,
+        userId: _currentUserId.value,
+        needsSync: true, // Sync gerekiyor işaretle
       );
       
+      // 1. ÖNCE LOCAL DB'YE KAYDET (Hızlı!)
+      await _localDb.saveNote(newNote);
+      print('✅ Note saved to local DB');
+      
+      // 2. LOCAL LİSTEYİ GÜNCELLE (UI anında güncellenir)
       _notes.add(newNote);
       _notes.refresh();
       
-      print('🔥 Local listeye eklendi. Toplam not sayısı: ${_notes.length}');
-      
+      // 3. KULLANICIYA BİLDİR (Anında feedback)
       Get.snackbar(
         'Başarılı',
-        'Not başarıyla eklendi',
+        _connectivity.isOnline 
+            ? 'Not kaydedildi ve senkronize ediliyor...' 
+            : 'Not kaydedildi (Offline)',
         snackPosition: SnackPosition.TOP,
         backgroundColor: AppColors.success,
         colorText: Colors.white,
         duration: const Duration(seconds: 2),
       );
+      
+      // 4. ARKA PLANDA FIREBASE'E GÖNDER (Async)
+      if (_connectivity.isOnline) {
+        _syncManager.syncNote(newNote).catchError((error) {
+          print('⚠️ Background sync failed: $error');
+          // Hata durumunda needsSync true kaldığı için sonra sync olacak
+        });
+      } else {
+        print('⚠️ Offline - Note will sync when online');
+      }
+      
+      print('✅ Note add completed');
     } catch (e) {
-      print('🔥 Not eklenirken hata: $e');
+      print('❌ Error adding note: $e');
       Get.snackbar(
         'Hata',
-        'Not eklenirken bir hata oluştu: $e',
+        'Not eklenirken hata oluştu',
         snackPosition: SnackPosition.TOP,
         backgroundColor: AppColors.error,
         colorText: Colors.white,
-        duration: const Duration(seconds: 5),
       );
-    } finally {
-      _isLoading.value = false;
     }
   }
 
-  // Not güncelleme
+  /// Not güncelleme (Offline-First)
   Future<void> updateNote(String noteId, String title, String content) async {
     try {
-      _isLoading.value = true;
+      print('✏️ Updating note (offline-first)...');
       
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Kullanıcı giriş yapmamış');
-      }
-
-      final noteData = {
-        'title': title,
-        'content': content,
-        'updatedAt': Timestamp.fromDate(DateTime.now()),
-      };
-
-      // Firestore'da güncelle
-      await _firestore
-          .collection('users')
-          .doc(user.uid)
-          .collection('notes')
-          .doc(noteId)
-          .update(noteData);
-
-      // Local listeyi güncelle
       final noteIndex = _notes.indexWhere((note) => note.id == noteId);
-      if (noteIndex != -1) {
-        final updatedNote = _notes[noteIndex].copyWith(
-          title: title,
-          content: content,
-          updatedAt: DateTime.now(),
-        );
-        _notes[noteIndex] = updatedNote;
-        _notes.refresh();
-        
-        Get.snackbar(
-          'Başarılı',
-          'Not başarıyla güncellendi',
-          snackPosition: SnackPosition.TOP,
-          backgroundColor: AppColors.success,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 2),
-        );
+      if (noteIndex == -1) {
+        throw Exception('Not bulunamadı');
       }
-    } catch (e) {
-      print('Not güncellenirken hata: $e');
-      Get.snackbar(
-        'Hata',
-        'Not güncellenirken bir hata oluştu',
-        snackPosition: SnackPosition.TOP,
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        duration: const Duration(seconds: 3),
+      
+      // Güncellenmiş not
+      final updatedNote = _notes[noteIndex].copyWith(
+        title: title,
+        content: content,
+        updatedAt: DateTime.now(),
+        needsSync: true, // Sync gerekiyor
       );
-    } finally {
-      _isLoading.value = false;
-    }
-  }
-
-  // Not silme (geri alma özelliği ile)
-  Future<void> deleteNote(String noteId) async {
-    try {
-      _isLoading.value = true;
       
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Kullanıcı giriş yapmamış');
-      }
-
-      // Silinecek notu bul
-      final noteToDelete = _notes.firstWhere((note) => note.id == noteId);
+      // 1. LOCAL DB'YE KAYDET
+      await _localDb.saveNote(updatedNote);
+      print('✅ Note updated in local DB');
       
-      // Firestore'dan sil
-      await _firestore
-          .collection('users')
-          .doc(user.uid)
-          .collection('notes')
-          .doc(noteId)
-          .delete();
+      // 2. LOCAL LİSTEYİ GÜNCELLE
+      _notes[noteIndex] = updatedNote;
+      _notes.refresh();
       
-      // Local listeden çıkar
-      _notes.removeWhere((note) => note.id == noteId);
-      
-      // Silinen notu geri alma için sakla
-      _deletedNotes.add(noteToDelete);
-      _lastDeletedNote.value = noteToDelete;
-      
-      // Geri alma snackbar'ı göster
+      // 3. KULLANICIYA BİLDİR
       Get.snackbar(
-        'Not Silindi',
-        'Not başarıyla silindi',
+        'Başarılı',
+        _connectivity.isOnline 
+            ? 'Not güncellendi ve senkronize ediliyor...' 
+            : 'Not güncellendi (Offline)',
         snackPosition: SnackPosition.TOP,
         backgroundColor: AppColors.success,
         colorText: Colors.white,
-        duration: const Duration(seconds: 3),
+        duration: const Duration(seconds: 2),
+      );
+      
+      // 4. ARKA PLANDA SYNC
+      if (_connectivity.isOnline) {
+        _syncManager.syncNote(updatedNote).catchError((error) {
+          print('⚠️ Background sync failed: $error');
+        });
+      }
+      
+      print('✅ Note update completed');
+    } catch (e) {
+      print('❌ Error updating note: $e');
+      Get.snackbar(
+        'Hata',
+        'Not güncellenirken hata oluştu',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: AppColors.error,
+        colorText: Colors.white,
+      );
+    }
+  }
+
+  /// Not silme (Offline-First + Undo)
+  Future<void> deleteNote(String noteId) async {
+    try {
+      print('🗑️ Deleting note (offline-first)...');
+      
+      final noteIndex = _notes.indexWhere((note) => note.id == noteId);
+      if (noteIndex == -1) {
+        throw Exception('Not bulunamadı');
+      }
+      
+      final noteToDelete = _notes[noteIndex];
+      
+      // 1. SOFT DELETE - LOCAL DB'DE İŞARETLE
+      final deletedNote = noteToDelete.copyWith(
+        isDeleted: true,
+        needsSync: true,
+        updatedAt: DateTime.now(),
+      );
+      
+      await _localDb.saveNote(deletedNote);
+      print('✅ Note marked as deleted in local DB');
+      
+      // 2. LOCAL LİSTEDEN ÇIKAR
+      _notes.removeAt(noteIndex);
+      _notes.refresh();
+      
+      // 3. GERİ ALMA İÇİN SAKLA
+      _lastDeletedNote.value = noteToDelete;
+      
+      // 4. UNDO SNACKBAR GÖSTER
+      Get.snackbar(
+        'Not Silindi',
+        _connectivity.isOnline 
+            ? 'Not silindi ve senkronize ediliyor...' 
+            : 'Not silindi (Offline)',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: AppColors.success,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 4),
         mainButton: TextButton(
           onPressed: () {
-            _undoDelete();
+            undoDelete();
+            Get.closeCurrentSnackbar();
           },
           child: const Text(
             'GERİ AL',
@@ -326,145 +315,131 @@ class NoteController extends GetxController {
           ),
         ),
       );
+      
+      // 5. ARKA PLANDA SYNC
+      if (_connectivity.isOnline) {
+        _syncManager.syncNote(deletedNote).catchError((error) {
+          print('⚠️ Background sync failed: $error');
+        });
+      }
+      
+      print('✅ Note delete completed');
     } catch (e) {
-      print('Not silinirken hata: $e');
+      print('❌ Error deleting note: $e');
       Get.snackbar(
         'Hata',
-        'Not silinirken bir hata oluştu',
+        'Not silinirken hata oluştu',
         snackPosition: SnackPosition.TOP,
         backgroundColor: AppColors.error,
         colorText: Colors.white,
-        duration: const Duration(seconds: 3),
       );
-    } finally {
-      _isLoading.value = false;
     }
   }
 
-  // Silinen notu geri alma
-  Future<void> _undoDelete() async {
+  /// Silmeyi geri al
+  Future<void> undoDelete() async {
     try {
-      if (_lastDeletedNote.value != null) {
-        final user = _auth.currentUser;
-        if (user == null) {
-          throw Exception('Kullanıcı giriş yapmamış');
-        }
-
-        final note = _lastDeletedNote.value!;
-        
-        // Firestore'a geri ekle
-        final noteData = {
-          'title': note.title,
-          'content': note.content,
-          'createdAt': Timestamp.fromDate(note.createdAt),
-          'updatedAt': Timestamp.fromDate(note.updatedAt),
-          'isFavorite': note.isFavorite,
-          'userId': user.uid,
-        };
-
-        await _firestore
-            .collection('users')
-            .doc(user.uid)
-            .collection('notes')
-            .doc(note.id)
-            .set(noteData);
-
-        // Local listeye geri ekle
-        _notes.add(note);
-        _notes.refresh();
-        
-        // Silinen notlar listesinden çıkar
-        _deletedNotes.remove(note);
-        _lastDeletedNote.value = null;
-        
-        Get.snackbar(
-          'Geri Alındı',
-          'Not başarıyla geri alındı',
-          snackPosition: SnackPosition.TOP,
-          backgroundColor: AppColors.success,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 2),
-        );
+      if (_lastDeletedNote.value == null) return;
+      
+      final note = _lastDeletedNote.value!;
+      
+      // 1. RESTORE NOTE
+      final restoredNote = note.copyWith(
+        isDeleted: false,
+        needsSync: true,
+        updatedAt: DateTime.now(),
+      );
+      
+      await _localDb.saveNote(restoredNote);
+      print('✅ Note restored in local DB');
+      
+      // 2. LOCAL LİSTEYE GERİ EKLE
+      _notes.add(restoredNote);
+      _notes.refresh();
+      
+      // 3. CLEAR LAST DELETED
+      _lastDeletedNote.value = null;
+      
+      // 4. BİLDİR
+      Get.snackbar(
+        'Geri Alındı',
+        'Not geri yüklendi',
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: AppColors.success,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 2),
+      );
+      
+      // 5. SYNC
+      if (_connectivity.isOnline) {
+        _syncManager.syncNote(restoredNote);
       }
     } catch (e) {
-      print('Not geri alınırken hata: $e');
-      Get.snackbar(
-        'Hata',
-        'Not geri alınırken bir hata oluştu',
-        snackPosition: SnackPosition.TOP,
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        duration: const Duration(seconds: 3),
-      );
+      print('❌ Error undoing delete: $e');
     }
   }
 
-  // Manuel geri alma (dışarıdan çağrılabilir)
-  Future<void> undoLastDelete() async {
-    await _undoDelete();
-  }
-
-  // Favori durumunu değiştirme
+  /// Favori durumunu değiştir (Offline-First)
   Future<void> toggleFavorite(String noteId) async {
     try {
-      _isLoading.value = true;
-      
-      final user = _auth.currentUser;
-      if (user == null) {
-        throw Exception('Kullanıcı giriş yapmamış');
-      }
-
       final noteIndex = _notes.indexWhere((note) => note.id == noteId);
-      if (noteIndex != -1) {
-        final note = _notes[noteIndex];
-        final updatedNote = note.copyWith(
-          isFavorite: !note.isFavorite,
-          updatedAt: DateTime.now(),
-        );
-
-        // Firestore'da güncelle
-        await _firestore
-            .collection('users')
-            .doc(user.uid)
-            .collection('notes')
-            .doc(noteId)
-            .update({
-          'isFavorite': updatedNote.isFavorite,
-          'updatedAt': Timestamp.fromDate(updatedNote.updatedAt),
-        });
-
-        // Local listeyi güncelle
-        _notes[noteIndex] = updatedNote;
-        _notes.refresh();
-        
-        final message = updatedNote.isFavorite ? 'Favorilere eklendi' : 'Favorilerden çıkarıldı';
-        Get.snackbar(
-          'Başarılı',
-          message,
-          snackPosition: SnackPosition.TOP,
-          backgroundColor: AppColors.success,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 2),
-        );
+      if (noteIndex == -1) return;
+      
+      final note = _notes[noteIndex];
+      final updatedNote = note.copyWith(
+        isFavorite: !note.isFavorite,
+        needsSync: true,
+        updatedAt: DateTime.now(),
+      );
+      
+      // 1. LOCAL DB'YE KAYDET
+      await _localDb.saveNote(updatedNote);
+      
+      // 2. LOCAL LİSTEYİ GÜNCELLE
+      _notes[noteIndex] = updatedNote;
+      _notes.refresh();
+      
+      // 3. FEEDBACK
+      final message = updatedNote.isFavorite ? 'Favorilere eklendi' : 'Favorilerden çıkarıldı';
+      Get.snackbar(
+        'Başarılı',
+        message,
+        snackPosition: SnackPosition.TOP,
+        backgroundColor: AppColors.success,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 1),
+      );
+      
+      // 4. SYNC
+      if (_connectivity.isOnline) {
+        _syncManager.syncNote(updatedNote);
       }
     } catch (e) {
-      print('Favori durumu değiştirilirken hata: $e');
-      Get.snackbar(
-        'Hata',
-        'Favori durumu değiştirilirken bir hata oluştu',
-        snackPosition: SnackPosition.TOP,
-        backgroundColor: AppColors.error,
-        colorText: Colors.white,
-        duration: const Duration(seconds: 3),
-      );
-    } finally {
-      _isLoading.value = false;
+      print('❌ Error toggling favorite: $e');
     }
   }
 
-  // Tüm notları temizle
+  /// Manuel senkronizasyon tetikle
+  Future<void> manualSync() async {
+    await _syncManager.manualSync();
+    await loadNotes();
+  }
+
+  /// Tüm notları temizle (logout için)
   void clearAllNotes() {
     _notes.clear();
     _searchQuery.value = '';
+    _lastDeletedNote.value = null;
+  }
+
+  /// Debug bilgisi
+  void printStats() {
+    final stats = _syncManager.getStats();
+    print('📊 Note Controller Stats:');
+    print('  - Local notes: ${_notes.length}');
+    print('  - Active notes: ${stats['activeNotes']}');
+    print('  - Needs sync: ${stats['needsSyncCount']}');
+    print('  - Is syncing: ${stats['isSyncing']}');
+    print('  - Is online: ${stats['isOnline']}');
   }
 }

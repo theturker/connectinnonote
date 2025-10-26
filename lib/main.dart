@@ -5,13 +5,54 @@ import 'package:firebase_core/firebase_core.dart';
 import 'constants/app_colors.dart';
 import 'controllers/auth_controller.dart';
 import 'controllers/note_controller.dart';
+import 'services/local_database_service.dart';
+import 'services/connectivity_service.dart';
+import 'services/sync_manager.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  runApp(const MyApp());
+  
+  try {
+    // 1. Firebase'i başlat
+    print('🔥 Initializing Firebase...');
+    await Firebase.initializeApp();
+    print('✅ Firebase initialized');
+    
+    // 2. Local Database'i başlat
+    print('💾 Initializing Local Database...');
+    final localDb = LocalDatabaseService();
+    await localDb.init();
+    print('✅ Local Database initialized');
+    
+    // 3. Servisleri GetX'e kaydet
+    print('🔧 Setting up services...');
+    
+    // Local DB'yi dependency olarak kaydet
+    Get.put(localDb, permanent: true);
+    
+    // Connectivity Service
+    Get.put(ConnectivityService(), permanent: true);
+    
+    // Sync Manager (localDb ve connectivity'ye bağımlı)
+    Get.put(
+      SyncManager(
+        Get.find<LocalDatabaseService>(),
+        Get.find<ConnectivityService>(),
+      ),
+      permanent: true,
+    );
+    
+    print('✅ Services initialized');
+    
+    // 4. Uygulamayı başlat
+    runApp(const MyApp());
+  } catch (e) {
+    print('❌ Initialization error: $e');
+    // Hata durumunda bile uygulamayı başlat
+    runApp(const MyApp());
+  }
 }
 
 class MyApp extends StatelessWidget {

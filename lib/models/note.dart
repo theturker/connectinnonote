@@ -1,13 +1,36 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:hive/hive.dart';
 
-class Note {
+part 'note.g.dart';
+
+@HiveType(typeId: 0)
+class Note extends HiveObject {
+  @HiveField(0)
   final String id;
+  
+  @HiveField(1)
   final String title;
+  
+  @HiveField(2)
   final String content;
+  
+  @HiveField(3)
   final DateTime createdAt;
+  
+  @HiveField(4)
   final DateTime updatedAt;
+  
+  @HiveField(5)
   final bool isFavorite;
+  
+  @HiveField(6)
   final String userId;
+  
+  @HiveField(7)
+  final bool needsSync; // Offline-first için sync ihtiyacı
+  
+  @HiveField(8)
+  final bool isDeleted; // Soft delete için
 
   Note({
     required this.id,
@@ -17,6 +40,8 @@ class Note {
     required this.updatedAt,
     this.isFavorite = false,
     required this.userId,
+    this.needsSync = false,
+    this.isDeleted = false,
   });
 
   // JSON'dan Note oluşturma (Firestore Timestamp desteği ile)
@@ -29,6 +54,8 @@ class Note {
       updatedAt: _parseDateTime(json['updatedAt']),
       isFavorite: json['isFavorite'] ?? false,
       userId: json['userId'] ?? '',
+      needsSync: json['needsSync'] ?? false,
+      isDeleted: json['isDeleted'] ?? false,
     );
   }
 
@@ -57,6 +84,20 @@ class Note {
       'updatedAt': updatedAt.toIso8601String(),
       'isFavorite': isFavorite,
       'userId': userId,
+      'needsSync': needsSync,
+      'isDeleted': isDeleted,
+    };
+  }
+  
+  // Firestore'a gönderilecek veri (sync ve delete flag'leri hariç)
+  Map<String, dynamic> toFirestore() {
+    return {
+      'title': title,
+      'content': content,
+      'createdAt': Timestamp.fromDate(createdAt),
+      'updatedAt': Timestamp.fromDate(updatedAt),
+      'isFavorite': isFavorite,
+      'userId': userId,
     };
   }
 
@@ -69,6 +110,8 @@ class Note {
     DateTime? updatedAt,
     bool? isFavorite,
     String? userId,
+    bool? needsSync,
+    bool? isDeleted,
   }) {
     return Note(
       id: id ?? this.id,
@@ -78,6 +121,8 @@ class Note {
       updatedAt: updatedAt ?? this.updatedAt,
       isFavorite: isFavorite ?? this.isFavorite,
       userId: userId ?? this.userId,
+      needsSync: needsSync ?? this.needsSync,
+      isDeleted: isDeleted ?? this.isDeleted,
     );
   }
 
