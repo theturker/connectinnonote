@@ -195,6 +195,16 @@ Firebase yapılandırma dosyaları:
 
 > **Not**: Bu dosyalar `.gitignore`'a eklenebilir, ancak bu projede örnek amaçlı dahil edilmiştir.
 
+## 🎬 Demo Video
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ekranvideo.mp4" width="600" controls>
+    Demo video burada görüntülenemiyor. <a href="docs/ekranvideo.mp4">Buraya tıklayarak</a> izleyebilirsiniz.
+  </video>
+</p>
+
+> **Not**: Video GitHub'da görünmüyorsa [buraya tıklayarak](docs/ekranvideo.mp4) izleyebilirsiniz.
+
 ## 📱 Ekran Görüntüleri
 
 <p align="center">
